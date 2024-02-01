@@ -1,0 +1,147 @@
+---
+title: "Dimensionality reduction intro"
+author: "Michał Woźniak"
+date: "2024-01-27"
+output: html_document
+---
+
+In this notebook I will try to see how can multiple dimensions be plotted on a 2 dimensional plane.
+
+Loading necessary libraries
+
+```{r libs, echo=T, results=F, warning=F, message=F}
+library(tidyverse)
+library(dplyr)
+library(glue)
+library(scales)
+library(ggplot2)
+library(GGally)
+library(rempsyc)
+library(smacof)
+library(Rtsne)
+library(gridExtra)
+```
+
+Loading the dataset and displaying datapoints of interest.
+
+```{r df_load, echo=T}
+df=read.csv('dataset.csv')
+df=df %>% select('Product','Protein..g.','Sugar..g.','Saturated.Fat..g.','Trans.Fat..g.') # selecting relevant columns
+colnames(df)=c('product','proteins','sugars','saturated_fats','trans_fats') # changing column names
+num_cols=c('proteins','sugars','saturated_fats','trans_fats') # numerical columns
+df=df[df['trans_fats']!=max(df['trans_fats']),] # removing a meal with suspiciously high trans fats value
+df=df[!duplicated(df[num_cols]),]
+df[308:317,] # I will focus on comparing selected McCafe beverages
+```
+
+Pairplots are regular way of showing the relationships between variables. However, as they are 2 dimensional, the displayed relationships are limited to 2 at a time. This is not helpful when trying to visually determine if specific points are similar to each other or not.
+
+```{r pairplot, echo=T}
+pairplot=ggpairs(df[308:317,num_cols],
+        upper=list(continuous='blankDiag'),
+        diag=list(continuous='blankDiag'),
+        progress=F)
+ggsave('pairplot.png', width = 10, height = 10)
+```
+
+![](pairplot1.png)
+
+In order to visualize similarities (or dissimilarities) between datapoints, one can perform dimensionality reduction.
+
+First, the data has to be standardized, so that each variable has the same "weight" when using MDS or t-SNE. Both methods used here rely on Euclidean distance, which is directly related to the order of magnitude of distinct variables.
+
+```{r df_std, echo=T}
+df_std=df
+for (col in num_cols)
+{
+  df_std[col]=scale(df[,col])
+}
+df_std[308:317,]
+```
+
+Performing standard Multidimensional Scaling (MDS). Here is the original [paper](http://cda.psych.uiuc.edu/psychometrika_highly_cited_articles/kruskal_1964a.pdf) from 1964, explaining what the algorithm is and how it works.
+
+```{r mds, echo=T}
+mds_res=mds(dist(df_std[num_cols]), # on standardized numerical columns
+            ndim=2, # Folding to 2 dimensions
+            type='ratio')
+print(glue("Stress-1 value = {round(mds_res$stress,3)}"))
+```
+
+According to the creator of the algorithm, the achieved goodness of fit, measured by the stress value, of 0.12 can be labeled as fair/good. Let's see how the chosen meals look like in the newly created dimensions.
+
+```{r mds_fit_data, echo=T}
+conf=mds_res$conf
+df_std[,c('mds_dim1','mds_dim2')]=mds_res$conf
+df_std[308:317,c('product','mds_dim1','mds_dim2')]
+```
+
+Plotting the results. With the number of dimensions reduced, we can now quickly evaluate which products have similar nutritional values. For example, chocolate and strawberry shakes are almost the same, while Mixed Berry Smoothie and Mango Smoothie are really close.
+
+```{r mds_plot, echo=T}
+mds_scatter=nice_scatter(df_std[308:317,c('product','mds_dim1','mds_dim2')],
+             predictor='mds_dim1',
+             response='mds_dim2',
+             group='product',
+             has.line=F,
+             xtitle='MDS dimension 1',
+             ytitle='MDS dimension 2')
+ggsave('mds.png', width = 10, height = 6)
+```
+
+![](mds.png) Now let's examine how each of the variables contributes to the stress value. To do so the MDS algorithm has to be run on a transposed dataset.
+
+```{r mds_quality, echo=T}
+mds_res_t=mds(dist(t(df_std[num_cols])), 
+              ndim=2, 
+              type='ratio')
+summary(mds_res_t)
+```
+
+Plotting the stress decomposition over the variables. As the data has no extreme outliers no variables prevent getting a better goodness of fit statistic on their own.
+
+```{r mds_quality_plots, echo=T}
+plot(mds_res_t, 
+     plot.type="stressplot",
+     xlab='Variable',
+     ylab='% contribution to the stress value') 
+```
+
+A different method for mapping points multidimensional points in low dimensional spaces is t-SNE, proposed and described in this extremely influential [paper](https://www.jmlr.org/papers/volume9/vandermaaten08a/vandermaaten08a.pdf). the chosen perplexity and theta parameters are offering a balance between computational complexity and satisfying results.
+
+```{r tsne, echo=T}
+tsne_res=Rtsne(df_std[num_cols],
+               dims=2,
+               perplexity=30,
+               verbose=F,
+               theta=0.5)
+df_std[,c('tsne_dim1','tsne_dim2')]=tsne_res$Y
+df_std[308:317,c('product','tsne_dim1','tsne_dim2')]
+```
+
+Plotting the results. Yet again, each product can now be easily compared to the rest quickly and easily. Unsurprisingly, observed similarities and dissimilarities are basically the same as for the MDS results. However, t-SNE seems to have put similar datapoints closer together, while keeping a greater distance from the rest than MDS.
+
+```{r tsne_plot, echo=T}
+tsne_scatter=nice_scatter(df_std[308:317,c('product','tsne_dim1','tsne_dim2')],
+             predictor='tsne_dim1',
+             response='tsne_dim2',
+             group='product',
+             has.line=F,
+             xtitle='t-SNE dimension 1',
+             ytitle='t-SNE dimension 2')
+ggsave('tsne.png', width=10, height=6)
+```
+
+![](tsne.png)
+
+Here are the individual standardized variables together with the fitted dimensions from MDS and t-SNE. Here we can see that products graphically portrayed as similar indeed are rather close in terms of nutritional values.
+
+```{r final_display, echo=T}
+all_num_cols=c('proteins','sugars','saturated_fats','trans_fats','mds_dim1','mds_dim2','tsne_dim1','tsne_dim2')
+df_std_round=df_std['product']
+df_std_round[all_num_cols]=round(df_std[all_num_cols],2)
+png('table.png',width=800, height=300)
+grid.table(df_std_round[308:317,])
+```
+
+![](table1.png)
